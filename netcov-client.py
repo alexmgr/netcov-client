@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import argparse
 import collections
 import enum
-import os
 import re
 import signal
 import socket
@@ -11,8 +11,6 @@ import sys
 import threading
 
 
-netcov_pipe = "/tmp/netcovmap"
-fuzzer_host = ("127.0.0.1", 5678)
 RE_COVERAGE_LINE = re.compile("^(\w+):(\d+)=(.*)")
 RE_EDGE_COUNT = re.compile("([\w\-.]+\+\d+)->([\w\-.]+\+\d+):(\d+);")
 coverage_proxy = None
@@ -27,6 +25,8 @@ CoverageTrend = enum.Enum("CoverageTrend", ["EDGE_INCREASE", "EDGE_DECREASE", "S
 
 class CodeCoverage(object):
     def __init__(self):
+        # TODO: Refactor to be fd specific. Move map to outer class.
+        # Will remove the need for locking
         self.coverage_maps = collections.defaultdict(set)
         self._lock = threading.Lock()
         self.trend = CoverageTrend.STABLE
@@ -106,19 +106,39 @@ class CoverageProxy(threading.Thread):
                         # TODO: better error handling here
                         print(ve, file=sys.stderr)
                     else:
-                        self.coverage.update_trend(fd, current_map)
-                        state, delta = self.coverage.get_trend()
+                        state, delta = self.coverage.update_trend(fd, current_map)
 
                         if state == CoverageTrend.EDGE_INCREASE:
+                            prefix = "INC"
                             print("Edge count increased by %d" % delta)
                         elif state == CoverageTrend.STABLE:
+                            prefix = "DEC"
                             print("Edge count stable. Hit count changed by %d" % delta)
                         else:
+                            prefix = "EQU"
                             print("Edge count decreased by %d" % delta)
+                        msg = "%s:%+d\n" % (prefix, delta)
+                        try:
+                            self.socket_.send(msg.encode("ascii"))
+                        except socket.error as se:
+                            print("Socket write failed: %s" % se, file=sys.stderr)
+                            break
+
+
+def prepare_parser():
+    parser = argparse.ArgumentParser(description="Forward netcov traces to a fuzzing client")
+    parser.add_argument("pipe", help="The netcov pipe to read from")
+    parser.add_argument("-f", "--forward", help="Upstream server to which to forward coverage information. Expected "
+                                                "format is host:port", type=lambda x: x.rsplit(":", 1), required=True)
+    return parser
 
 
 if __name__ == "__main__":
+    parser = prepare_parser()
+    args = parser.parse_args()
+
     signal.signal(signal.SIGINT, sigint_handler)
+
     with socket.socket() as socket_:
         try:
             socket_.settimeout(5)
@@ -127,7 +147,7 @@ if __name__ == "__main__":
             print("Unable to connect to %s: %s" % (fuzzer_host, se))
             exit(1)
         else:
-            coverage_proxy = CoverageProxy(netcov_pipe, socket_)
+            coverage_proxy = CoverageProxy(args.pipe, args.forward)
             coverage_proxy.start()
             coverage_proxy.join()
 
