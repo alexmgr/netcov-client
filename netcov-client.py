@@ -129,7 +129,9 @@ def prepare_parser():
     parser = argparse.ArgumentParser(description="Forward netcov traces to a fuzzing client")
     parser.add_argument("pipe", help="The netcov pipe to read from")
     parser.add_argument("-f", "--forward", help="Upstream server to which to forward coverage information. Expected "
-                                                "format is host:port", type=lambda x: x.rsplit(":", 1), required=True)
+                                                "format is host:port", type=lambda x: (x.rsplit(":", 1)[0],
+                                                                                       int(x.rsplit(":", 1)[1])),
+                        required=True)
     return parser
 
 
@@ -142,12 +144,12 @@ if __name__ == "__main__":
     with socket.socket() as socket_:
         try:
             socket_.settimeout(5)
-            socket_.connect(fuzzer_host)
+            socket_.connect(args.forward)
         except socket.error as se:
-            print("Unable to connect to %s: %s" % (fuzzer_host, se))
+            print("Unable to connect to %s: %s" % (args.forward, se))
             exit(1)
         else:
-            coverage_proxy = CoverageProxy(args.pipe, args.forward)
+            coverage_proxy = CoverageProxy(args.pipe, socket_)
             coverage_proxy.start()
             coverage_proxy.join()
 
